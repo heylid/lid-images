@@ -1,0 +1,103 @@
+name: sandbox image (release)
+
+# Pushing tag sandbox-vX.Y.Z publishes ghcr.io/heylid/lid-sandbox:X.Y.Z.
+on:
+  push:
+    tags:
+      - "sandbox-v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write # create the GitHub release
+      packages: write # push the image
+    env:
+      IMAGE: ghcr.io/heylid/lid-sandbox
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Version from tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#sandbox-v}"
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A version is never re-pushed.
+      - name: Refuse to overwrite an existing version
+        run: |
+          if docker buildx imagetools inspect "${IMAGE}:${VERSION}" >/dev/null 2>&1; then
+            echo "::error::${IMAGE}:${VERSION} already exists; versions are immutable"
+            exit 1
+          fi
+
+      - name: Build and smoke test before pushing
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: images/sandbox
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+          tags: lid-sandbox:release
+
+      - run: images/sandbox/smoke-test.sh lid-sandbox:release
+
+      - name: Push
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: images/sandbox
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE }}:${{ env.VERSION }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.licenses=Apache-2.0
+          outputs: type=image,push=true,compression=gzip,force-compression=true,oci-mediatypes=true
+
+      # zstd layers are not accepted by the platform that runs the image.
+      - name: Check layer media types
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          manifest="$(docker buildx imagetools inspect --raw "${IMAGE}@${DIGEST}")"
+          echo "$manifest" | jq .
+          bad="$(echo "$manifest" | jq -r '.layers[].mediaType | select(. != "application/vnd.oci.image.layer.v1.tar+gzip" and . != "application/vnd.docker.image.rootfs.diff.tar.gzip")')"
+          if [ -n "$bad" ]; then
+            echo "::error::non-gzip layers: $bad"
+            exit 1
+          fi
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          cat > notes.md <<NOTES
+          Image: \`${IMAGE}:${VERSION}\` (linux/amd64)
+
+          Digest: \`${DIGEST}\`
+
+          Pin by digest: \`${IMAGE}@${DIGEST}\`
+          NOTES
+          gh release create "$TAG" --title "sandbox ${VERSION}" --notes-file notes.md --verify-tag
