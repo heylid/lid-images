@@ -1,10 +1,20 @@
 name: sandbox image (release)
 
 # Pushing tag sandbox-vX.Y.Z publishes ghcr.io/heylid/lid-sandbox:X.Y.Z.
+#
+# Recovery: if a run fails after the push (so the image exists but the GitHub release does
+# not), run this workflow by hand from main with the version. It looks up the digest of the
+# existing image and creates the release; it never pushes.
 on:
   push:
     tags:
       - "sandbox-v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version whose release notes to create (X.Y.Z); the image must already exist"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -18,17 +28,37 @@ jobs:
       packages: write # push the image
     env:
       IMAGE: ghcr.io/heylid/lid-sandbox
+      EVENT: ${{ github.event_name }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Version from tag
+      - name: Version
         env:
           TAG: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          version="${TAG#sandbox-v}"
+          if [ "$EVENT" = push ]; then
+            version="${TAG#sandbox-v}"
+          else
+            version="$INPUT_VERSION"
+          fi
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'$version' is not X.Y.Z"
+            exit 1
+          fi
           echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Tag is on main
+        if: env.EVENT == 'push'
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not on main; releases are cut from main only"
+            exit 1
+          fi
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -38,15 +68,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # A version is never re-pushed.
+      # A version is never re-pushed. Fail closed: only a clear "not found" lets the push go on.
       - name: Refuse to overwrite an existing version
+        if: env.EVENT == 'push'
         run: |
-          if docker buildx imagetools inspect "${IMAGE}:${VERSION}" >/dev/null 2>&1; then
+          if out="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" 2>&1)"; then
             echo "::error::${IMAGE}:${VERSION} already exists; versions are immutable"
+            exit 1
+          fi
+          if echo "$out" | grep -Eiq 'not found|manifest unknown|name unknown|404'; then
+            echo "${IMAGE}:${VERSION} does not exist yet"
+          else
+            echo "::error::could not tell whether ${IMAGE}:${VERSION} exists:"
+            echo "$out"
             exit 1
           fi
 
       - name: Build and smoke test before pushing
+        if: env.EVENT == 'push'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: images/sandbox
@@ -57,10 +96,13 @@ jobs:
           sbom: false
           tags: lid-sandbox:release
 
-      - run: images/sandbox/smoke-test.sh lid-sandbox:release
+      - name: Smoke test (local build)
+        if: env.EVENT == 'push'
+        run: images/sandbox/smoke-test.sh lid-sandbox:release
 
       - name: Push
         id: push
+        if: env.EVENT == 'push'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: images/sandbox
@@ -74,24 +116,45 @@ jobs:
             org.opencontainers.image.licenses=Apache-2.0
           outputs: type=image,push=true,compression=gzip,force-compression=true,oci-mediatypes=true
 
-      # zstd layers are not accepted by the platform that runs the image.
-      - name: Check layer media types
+      # Written at once, so a later failure still leaves the digest on record.
+      - name: Record the digest
         env:
-          DIGEST: ${{ steps.push.outputs.digest }}
+          PUSHED_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          if [ "$EVENT" = push ]; then
+            digest="$PUSHED_DIGEST"
+          else
+            digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)"
+          fi
+          case "$digest" in sha256:*) ;; *) echo "::error::no digest found for ${IMAGE}:${VERSION}"; exit 1 ;; esac
+          echo "DIGEST=${digest}" >> "$GITHUB_ENV"
+          {
+            echo "### ${IMAGE}:${VERSION}"
+            echo
+            echo "Digest: \`${digest}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # zstd layers are not accepted by the platform that runs the image.
+      - name: Check manifest and layer media types
+        if: env.EVENT == 'push'
         run: |
           manifest="$(docker buildx imagetools inspect --raw "${IMAGE}@${DIGEST}")"
           echo "$manifest" | jq .
-          bad="$(echo "$manifest" | jq -r '.layers[].mediaType | select(. != "application/vnd.oci.image.layer.v1.tar+gzip" and . != "application/vnd.docker.image.rootfs.diff.tar.gzip")')"
-          if [ -n "$bad" ]; then
-            echo "::error::non-gzip layers: $bad"
-            exit 1
-          fi
+          echo "$manifest" | jq -e '
+            .mediaType == "application/vnd.oci.image.manifest.v1+json"
+            and .config.mediaType == "application/vnd.oci.image.config.v1+json"
+            and (.layers | length) > 0
+            and all(.layers[]; .mediaType == "application/vnd.oci.image.layer.v1.tar+gzip")
+          ' >/dev/null || { echo "::error::unexpected manifest or non-gzip layers"; exit 1; }
+
+      # The image that was tested must be the image that was pushed.
+      - name: Smoke test (pushed image)
+        if: env.EVENT == 'push'
+        run: images/sandbox/smoke-test.sh "${IMAGE}@${DIGEST}"
 
       - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-          DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           cat > notes.md <<NOTES
           Image: \`${IMAGE}:${VERSION}\` (linux/amd64)
@@ -100,4 +163,4 @@ jobs:
 
           Pin by digest: \`${IMAGE}@${DIGEST}\`
           NOTES
-          gh release create "$TAG" --title "sandbox ${VERSION}" --notes-file notes.md --verify-tag
+          gh release create "sandbox-v${VERSION}" --title "sandbox ${VERSION}" --notes-file notes.md --verify-tag

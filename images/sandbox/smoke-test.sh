@@ -8,6 +8,7 @@ run() { docker run --rm --network none "$image" "$@"; }
 
 run bash -euc '
   test "$(id -un)" = lid && test "$(id -u)" = 1000
+  ! getent passwd ubuntu
   sudo -n true
   git --version
   gh --version
@@ -25,9 +26,12 @@ run bash -euc '
   touch /workspace/.probe && rm /workspace/.probe
 '
 
-for var in SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS CURL_CA_BUNDLE GIT_SSL_CAINFO; do
+for var in SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS CURL_CA_BUNDLE GIT_SSL_CAINFO PIP_CERT; do
   got="$(run printenv "$var")"
   [ "$got" = "$bundle" ] || { echo "$var is '$got', want $bundle" >&2; exit 1; }
 done
+# sudo keeps the variables too.
+got="$(run sudo -n printenv SSL_CERT_FILE)"
+[ "$got" = "$bundle" ] || { echo "SSL_CERT_FILE under sudo is '$got'" >&2; exit 1; }
 run test -s "$bundle"
 echo "smoke test passed"

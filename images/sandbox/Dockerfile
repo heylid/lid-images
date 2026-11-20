@@ -1,12 +1,13 @@
 # syntax=docker/dockerfile:1
-FROM ubuntu:24.04
+FROM ubuntu:24.04@sha256:9c7f200c07e3d4a03e7249d2c16bf66a51120fb876aa2242cf31451412543289
 
 ARG NODE_VERSION=26.13.1
 ARG NODE_SHA256=5c063e46bab0fbc1c17cc445d7ff129cbdcd0471be6ed83b6ab864f8143bc864
 ARG GH_VERSION=2.105.0
 ARG GH_SHA256=79e7ab5db738c48777b696e374f8b428f0647debfb424f44d2f426370407fe2f
 
-ENV DEBIAN_FRONTEND=noninteractive
+# Build-time only: not kept in the image's environment.
+ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -20,8 +21,8 @@ RUN apt-get update \
 RUN curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
  && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
  && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
-      --exclude='*/CHANGELOG.md' --exclude='*/README.md' --exclude='*/LICENSE' \
-      --exclude='*/share/doc' --exclude='*/share/man' --exclude='*/share/systemtap' --exclude='*/include' \
+      --exclude='*/CHANGELOG.md' --exclude='*/README.md' \
+      --exclude='*/share/doc' --exclude='*/share/man' --exclude='*/share/systemtap' \
  && rm /tmp/node.tar.xz
 
 # GitHub CLI, from the official release tarball.

@@ -13,7 +13,8 @@ There is one image for now, `sandbox`.
 
 - **OS:** Ubuntu 24.04.
 - **User:** `lid` (uid 1000, home `/home/lid`) with passwordless `sudo`, so you can install
-  system packages. The image runs as `lid`.
+  system packages (run `sudo apt-get update` before the first install: the package lists are
+  not kept in the image). The image runs as `lid`.
 - **Working directory:** `/workspace`, owned by `lid`.
 - **Tools:** `git`, `gh`, `curl`, `ca-certificates`, `openssh-client`, `build-essential`,
   `ripgrep`, `fd` (`fdfind` on Ubuntu, linked as `fd`), `jq`, `unzip`, `zip`, `less`, `procps`,
@@ -51,12 +52,14 @@ images/sandbox/smoke-test.sh lid-sandbox:dev
   GitHub release for the tag.
 - **Versions are immutable:** a published version is never re-pushed, and the workflow refuses
   to overwrite one.
-- **Digests** are in each release's notes. Pin by digest: `ghcr.io/heylid/lid-sandbox@sha256:...`.
+- **Digests** are in each [release's notes](https://github.com/heylid/lid-images/releases). Pin by digest: `ghcr.io/heylid/lid-sandbox@sha256:...`.
 - Layers are gzip-compressed (checked in CI), for registries and runtimes that do not accept zstd.
 - Images are not signed yet.
 - **To cut a release** (maintainers): merge to `main`, then
-  `git tag sandbox-vX.Y.Z && git push origin sandbox-vX.Y.Z`. The first time, make the package
-  public in the organization's package settings.
+  `git tag sandbox-vX.Y.Z && git push origin sandbox-vX.Y.Z`. The tag must be on `main`. The
+  first time, make the package public in the organization's package settings. If a run fails
+  after the push, run the release workflow by hand from `main` with the version: it looks up
+  the existing image's digest and creates the release without pushing.
 
 Pull requests build the image without pushing it and run the smoke test.
 

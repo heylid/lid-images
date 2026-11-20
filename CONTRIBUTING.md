@@ -19,6 +19,12 @@ images/sandbox/smoke-test.sh lid-sandbox:dev
 The smoke test is what CI runs on every pull request. Extend it when you add something the
 image promises.
 
+## Dependencies
+
+Dependabot bumps the GitHub Actions and the base image digest. Node.js and `gh` are downloaded
+by the Dockerfile with pinned SHA256 checksums, so a bump of either needs its `*_VERSION` and
+`*_SHA256` arguments updated by hand.
+
 ## Review
 
 A maintainer reviews every pull request. CI runs on GitHub-hosted runners, and for a first-time
