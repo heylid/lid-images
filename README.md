@@ -59,7 +59,8 @@ images/sandbox/smoke-test.sh lid-sandbox:dev
   `git tag sandbox-vX.Y.Z && git push origin sandbox-vX.Y.Z`. The tag must be on `main`. The
   first time, make the package public in the organization's package settings. If a run fails
   after the push, run the release workflow by hand from `main` with the version: it looks up
-  the existing image's digest and creates the release without pushing.
+  the existing image's digest and creates the release without pushing, after re-checking the image. If that check or the
+  smoke test of the pushed image fails, cut a new version: the failed one is immutable.
 
 Pull requests build the image without pushing it and run the smoke test.
 

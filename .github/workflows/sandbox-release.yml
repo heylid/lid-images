@@ -21,6 +21,8 @@ permissions:
 
 jobs:
   publish:
+    # Recovery runs only from main.
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -76,7 +78,7 @@ jobs:
             echo "::error::${IMAGE}:${VERSION} already exists; versions are immutable"
             exit 1
           fi
-          if echo "$out" | grep -Eiq 'not found|manifest unknown|name unknown|404'; then
+          if echo "$out" | grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN|manifest unknown|name unknown|: not found$|\b404\b'; then
             echo "${IMAGE}:${VERSION} does not exist yet"
           else
             echo "::error::could not tell whether ${IMAGE}:${VERSION} exists:"
@@ -136,7 +138,6 @@ jobs:
 
       # zstd layers are not accepted by the platform that runs the image.
       - name: Check manifest and layer media types
-        if: env.EVENT == 'push'
         run: |
           manifest="$(docker buildx imagetools inspect --raw "${IMAGE}@${DIGEST}")"
           echo "$manifest" | jq .
@@ -149,7 +150,6 @@ jobs:
 
       # The image that was tested must be the image that was pushed.
       - name: Smoke test (pushed image)
-        if: env.EVENT == 'push'
         run: images/sandbox/smoke-test.sh "${IMAGE}@${DIGEST}"
 
       - name: GitHub release
